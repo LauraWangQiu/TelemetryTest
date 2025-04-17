@@ -102,7 +102,7 @@ public class ConfigEditor : MonoBehaviour
         }
 
         GUILayout.Label("Persistence Type:");
-        persistenceType = (Tracker.PersistenceType)GUILayout.SelectionGrid((int)persistenceType, new string[] { "LOCAL", "NETWORK" }, 2);
+        persistenceType = (Tracker.PersistenceType)GUILayout.SelectionGrid((int)persistenceType, new string[] { "LOCAL", "DATABASE", "WEBSERVER" }, 3);
         if (GUILayout.Button("Save Persistence Type"))
         {
             ConfigManager.SetPersistenceType(persistenceType);

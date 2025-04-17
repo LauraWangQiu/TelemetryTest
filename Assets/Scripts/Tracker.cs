@@ -1,13 +1,15 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using UnityEngine;
 using Firebase.Database;
 using Firebase.Extensions;
 using Firebase;
+using System.Net.Http;
+using System.Text;
 
 public class Tracker
 {
     public enum Format { JSON, CSV }
-    public enum PersistenceType { LOCAL, NETWORK }
+    public enum PersistenceType { LOCAL, DATABASE, WEBSERVER }
 
     private static Tracker _instance;
     public static Tracker Instance => _instance;
@@ -18,15 +20,18 @@ public class Tracker
     private PersistenceType persistenceType;
     private string sessionId;
     public string SessionId => sessionId;
-    public int EVENTS_TO_WRITE_SIZE;
+    private int EVENTS_TO_WRITE_SIZE;
 
-    public Tracker(string sessionId)
+    private string webhookURL;
+
+    public Tracker(string sessId)
     {
-        this.sessionId = sessionId;
-        this.format = ConfigManager.GetFormat();
-        this.persistenceType = ConfigManager.GetPersistenceType();
-        this.eventQueue = new ConcurrentQueue<Event>();
-        this.EVENTS_TO_WRITE_SIZE = ConfigManager.GetEventsToWriteSize();
+        sessionId = sessId;
+        format = ConfigManager.GetFormat();
+        persistenceType = ConfigManager.GetPersistenceType();
+        eventQueue = new ConcurrentQueue<Event>();
+        EVENTS_TO_WRITE_SIZE = ConfigManager.GetEventsToWriteSize();
+        webhookURL = ConfigManager.GetWebhookURL();
 
         switch (this.persistenceType)
         {
@@ -34,7 +39,7 @@ public class Tracker
                 route = Application.dataPath + "/" + ConfigManager.GetLogFilename();
                 Debug.Log("Local telemetry file path: " + route);
                 break;
-            case PersistenceType.NETWORK:
+            case PersistenceType.DATABASE:
                 FirebaseApp.CheckAndFixDependenciesAsync().ContinueWithOnMainThread(task =>
                 {
                     if (task.Result == DependencyStatus.Available)
@@ -47,7 +52,9 @@ public class Tracker
                     }
                 });
                 break;
-            // ...
+            case PersistenceType.WEBSERVER:
+                break;
+                // ...
         }
 
         _instance = this;
@@ -59,10 +66,19 @@ public class Tracker
 
         if (eventQueue.Count >= EVENTS_TO_WRITE_SIZE)
         {
-            if (persistenceType == PersistenceType.LOCAL)
-                FlushQueueToFile();
-            else if (persistenceType == PersistenceType.NETWORK)
-                FlushQueueToFirebase();
+            switch (persistenceType)
+            {
+                case PersistenceType.LOCAL:
+                    FlushQueueToFile();
+                    break;
+                case PersistenceType.DATABASE:
+                    FlushQueueToFirebase();
+                    break;
+                case PersistenceType.WEBSERVER:
+                    FlushQueueToWebServer();
+                    break;
+                // ...
+            }
         }
     }
 
@@ -82,16 +98,26 @@ public class Tracker
         }
     }
 
+    private void FlushQueueToWebServer()
+    {
+        while (eventQueue.TryDequeue(out Event e))
+        {
+            SendEventToWebServer(e);
+        }
+    }
+
     public void SendEventToFirebase(Event e)
     {
         // Firebase solo permite envio de datos con formato JSON
-        Debug.Log("Sending event to Firebase: " + e.ToJSON());
+        string json = e.ToJSON();
+
+        Debug.Log("Sending event to Firebase: " + json);
 
         DatabaseReference dbRef = FirebaseDatabase.DefaultInstance.RootReference;
 
         dbRef.Child("events")
             .Push()
-            .SetRawJsonValueAsync(e.ToJSON())
+            .SetRawJsonValueAsync(json)
             .ContinueWithOnMainThread(task =>
             {
                 if (task.IsFaulted || task.IsCanceled)
@@ -107,7 +133,35 @@ public class Tracker
                     }
                 }
                 else if (task.IsCompleted)
-                    Debug.Log("Event correctly sent");
+                    Debug.Log("Event correctly sent to Firebase");
             });
+    }
+
+    private async void SendEventToWebServer(Event e)
+    {
+        string json = e.ToJSON();
+
+        Debug.Log("Sending event to Google Sheets: " + json);
+
+        using HttpClient client = new HttpClient();
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+        try
+        {
+            HttpResponseMessage response = await client.PostAsync(webhookURL, content);
+
+            if (response.IsSuccessStatusCode)
+            {
+                Debug.Log("Event correctly sent to Google Sheets");
+            }
+            else
+            {
+                Debug.LogError("Error sending event to Google Sheets: " + response.StatusCode);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogError("Exception sending event to Google Sheets: " + ex.Message);
+        }
     }
 }
